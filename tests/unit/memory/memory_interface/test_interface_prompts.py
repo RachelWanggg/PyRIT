@@ -1909,6 +1909,69 @@ async def test_get_request_from_response_raises_error_when_no_preceding_messages
         await sqlite_instance.get_request_from_response_async(response=response)
 
 
+async def test_get_request_from_response_after_tool_call(sqlite_instance: MemoryInterface):
+    """Test get_request_from_response returns the user request, not the tool output, for an answer after a tool call."""
+    conversation_id = str(uuid4())
+
+    # A target's tool loop stores the function call and its output as messages between the request and the answer.
+    pieces = [
+        MessagePiece(role="user", original_value="First question", conversation_id=conversation_id, sequence=0),
+        MessagePiece(role="assistant", original_value="First answer", conversation_id=conversation_id, sequence=1),
+        MessagePiece(
+            role="user", original_value="What is the weather in Seattle?", conversation_id=conversation_id, sequence=2
+        ),
+        MessagePiece(
+            role="assistant",
+            original_value=json.dumps({"type": "function_call", "call_id": "call_1", "name": "get_weather"}),
+            original_value_data_type="function_call",
+            conversation_id=conversation_id,
+            sequence=3,
+        ),
+        MessagePiece(
+            role="tool",
+            original_value=json.dumps({"type": "function_call_output", "call_id": "call_1", "output": "sunny"}),
+            original_value_data_type="function_call_output",
+            conversation_id=conversation_id,
+            sequence=4,
+        ),
+        MessagePiece(
+            role="assistant", original_value="It's sunny in Seattle.", conversation_id=conversation_id, sequence=5
+        ),
+    ]
+    await sqlite_instance.add_message_pieces_to_memory_async(message_pieces=pieces)
+
+    conversation = await sqlite_instance.get_conversation_messages_async(conversation_id=conversation_id)
+    response = conversation[5]
+
+    request = await sqlite_instance.get_request_from_response_async(response=response)
+
+    assert request.api_role == "user"
+    assert request.sequence == 2
+    assert request.get_value() == "What is the weather in Seattle?"
+
+
+async def test_get_request_from_response_without_user_message_returns_previous_message(
+    sqlite_instance: MemoryInterface,
+):
+    """Test get_request_from_response falls back to the previous message when no user message precedes the response."""
+    conversation_id = str(uuid4())
+
+    pieces = [
+        MessagePiece(role="system", original_value="You are helpful.", conversation_id=conversation_id, sequence=0),
+        MessagePiece(role="assistant", original_value="Hello!", conversation_id=conversation_id, sequence=1),
+        MessagePiece(role="assistant", original_value="How can I help?", conversation_id=conversation_id, sequence=2),
+    ]
+    await sqlite_instance.add_message_pieces_to_memory_async(message_pieces=pieces)
+
+    conversation = await sqlite_instance.get_conversation_messages_async(conversation_id=conversation_id)
+    response = conversation[2]
+
+    request = await sqlite_instance.get_request_from_response_async(response=response)
+
+    assert request.sequence == 1
+    assert request.get_value() == "Hello!"
+
+
 async def test_get_message_pieces_by_attack_identifier_filter(sqlite_instance: MemoryInterface):
     attack1 = PromptSendingAttack(objective_target=get_mock_target())
 

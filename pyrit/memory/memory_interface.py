@@ -3675,7 +3675,9 @@ class MemoryInterface(abc.ABC):
             raise ValueError(
                 f"The provided request does not have a preceding request in conversation '{response.conversation_id}'."
             )
-        return preceding_messages[-1]
+        # A target's tool loop stores the function call and the tool output between the user request and the
+        # final answer, so the request is the last user message rather than the message right before the response.
+        return next((msg for msg in reversed(preceding_messages) if msg.api_role == "user"), preceding_messages[-1])
 
     def _build_message_piece_identifier_conditions(
         self, *, identifier_filters: Sequence[IdentifierFilter]

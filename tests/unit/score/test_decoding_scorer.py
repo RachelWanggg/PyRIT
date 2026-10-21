@@ -1,6 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -50,6 +51,32 @@ class _EchoTarget(MockPromptTarget):
                 original_value=self._reply.format(received=request.converted_value),
                 conversation_id=request.conversation_id,
             ).to_message()
+        ]
+
+
+class _ToolCallingTarget(MockPromptTarget):
+    """Calls a tool before answering with ``reply``, storing the turn the way ``OpenAIResponseTarget`` does."""
+
+    def __init__(self, *, reply: str) -> None:
+        super().__init__()
+        self._reply = reply
+
+    async def _send_prompt_to_target_async(self, *, normalized_conversation: list[Message]) -> list[Message]:
+        conversation_id = normalized_conversation[-1].message_pieces[0].conversation_id
+        return [
+            MessagePiece(
+                role="assistant",
+                original_value=json.dumps({"type": "function_call", "call_id": "call_1", "name": "decode_base64"}),
+                original_value_data_type="function_call",
+                conversation_id=conversation_id,
+            ).to_message(),
+            MessagePiece(
+                role="tool",
+                original_value=json.dumps({"type": "function_call_output", "call_id": "call_1", "output": "secret"}),
+                original_value_data_type="function_call_output",
+                conversation_id=conversation_id,
+            ).to_message(),
+            MessagePiece(role="assistant", original_value=self._reply, conversation_id=conversation_id).to_message(),
         ]
 
 
@@ -261,6 +288,26 @@ class TestDecodingScorer:
             objective_target=_EchoTarget(reply=reply),
             attack_converter_config=AttackConverterConfig(
                 request_converters=ConverterConfiguration.from_converters(converters=converters)
+            ),
+            attack_scoring_config=AttackScoringConfig(objective_scorer=DecodingScorer()),
+        )
+
+        result = await attack.execute_async(objective="secret")
+
+        assert result.outcome == expected_outcome
+
+    @pytest.mark.parametrize(
+        "reply,expected_outcome",
+        [
+            pytest.param("Decoded: secret", AttackOutcome.SUCCESS, id="plaintext"),
+            pytest.param("I refuse", AttackOutcome.FAILURE, id="refusal"),
+        ],
+    )
+    async def test_encoding_attack_scores_reply_after_tool_call(self, patch_central_database, reply, expected_outcome):
+        attack = PromptSendingAttack(
+            objective_target=_ToolCallingTarget(reply=reply),
+            attack_converter_config=AttackConverterConfig(
+                request_converters=ConverterConfiguration.from_converters(converters=[Base64Converter()])
             ),
             attack_scoring_config=AttackScoringConfig(objective_scorer=DecodingScorer()),
         )
