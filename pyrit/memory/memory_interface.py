@@ -126,6 +126,7 @@ from pyrit.models import (
     Operation,
     OperationUsage,
     PromptDataType,
+    RequestTraceContext,
     RetryEvent,
     ScenarioAttackResultDelta,
     ScenarioIdentifier,
@@ -3651,6 +3652,10 @@ class MemoryInterface(abc.ABC):
         """
         Retrieve the request that produced the given response.
 
+        Outbound request markers identify caller-supplied messages of any role, skipping
+        target-generated tool calls and outputs. Unmarked history falls back to the last
+        user message, or the preceding message when no user message exists.
+
         Args:
             response (Message): The response message object to match.
 
@@ -3675,9 +3680,13 @@ class MemoryInterface(abc.ABC):
             raise ValueError(
                 f"The provided request does not have a preceding request in conversation '{response.conversation_id}'."
             )
-        # A target's tool loop stores the function call and the tool output between the user request and the
-        # final answer, so the request is the last user message rather than the message right before the response.
-        return next((msg for msg in reversed(preceding_messages) if msg.api_role == "user"), preceding_messages[-1])
+        for message in reversed(preceding_messages):
+            if message.api_role == "user" or any(
+                piece.prompt_metadata.get(RequestTraceContext.REQUEST_METADATA_KEY) == 1
+                for piece in message.message_pieces
+            ):
+                return message
+        return preceding_messages[-1]
 
     def _build_message_piece_identifier_conditions(
         self, *, identifier_filters: Sequence[IdentifierFilter]
@@ -9104,6 +9113,10 @@ class MemoryInterface(abc.ABC):
     async def get_request_from_response_async(self, *, response: Message) -> Message:
         """
         Retrieve the request that produced the given response.
+
+        Returns the latest preceding outbound request of any role, skipping target-generated
+        tool messages. For unmarked history, returns the last user message or, if absent,
+        the immediately preceding message.
 
         Args:
             response (Message): The response message object to match.
